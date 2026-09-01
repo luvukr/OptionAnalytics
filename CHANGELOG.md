@@ -1,5 +1,86 @@
 # Changelog
 
+## 1.3.0
+
+Adds `ImpliedForward`: the forward price and cost of carry the option market is actually quoting,
+extracted from call/put pairs instead of assumed.
+
+### Why the carry was the weakest input in the library
+
+Every price here is driven by `CostOfCarry`, and until now that number had to come from outside --
+a dividend-yield forecast, a borrow assumption, a rate off a feed. For an index that is worse than
+an assumption. **The cash index is not a tradeable instrument, so there is no carry that makes it
+one.** Nobody buys NIFTY. What trades is the future and the option chain, and those two agree with
+each other on a forward that a spot level plus a dividend guess does not reproduce.
+
+Put-call parity is a static arbitrage, not a Black-Scholes result, so `C - P = exp(-rT)(F - K)` holds
+whatever anyone believes about volatility -- including across a skew. Rearranged, it hands over the
+forward.
+
+### `FromChain` needs no interest rate at all
+
+Parity is linear in the strike: `C(K) - P(K) = exp(-rT)F - exp(-rT)K`. Regressing the call-put
+spread on the strike therefore recovers **both** unknowns -- the discount factor is minus the slope,
+the discounted forward is the intercept -- so the rate is an output rather than an input. That
+removes the last external assumption from pricing an index chain.
+
+The carry that comes back absorbs the dividend yield, the borrow or repo spread, the index basis and
+any funding skew simultaneously, none of them separately estimated. Their total is directly
+observable; individually they are guesses.
+
+### It checks itself, and the single-pair form cannot
+
+On clean simultaneous European quotes every pair sits on one line, so `WorstParityResidual` is a real
+diagnostic. Measured: a chain with one put quoted 12 points stale -- well inside a plausible
+bid/ask, invisible to eyeballing -- moves the residual from below `1e-8` to above 5, while genuinely
+contaminating the carry.
+
+**Below three strikes that residual is zero by construction**, because a straight line through two
+points fits them exactly however bad the quotes are. A test pins that with deliberately absurd
+quotes, so the limitation cannot be mistaken for a clean fit. `FromCallPut` -- one pair plus an
+assumed rate -- is provided for chains where only one strike is quoted, and its documentation says
+plainly that it cannot detect its own failure.
+
+### Which strike to use, and a correction to the obvious answer
+
+"Use the at-the-money strike" is wrong if at-the-money means spot. The error a wrong rate produces is
+`T*exp(rT)*(C-P)`, which vanishes at the FORWARD, and on a 30-day NIFTY carrying at 5.3% the forward
+sits 108 points above spot -- four strikes away on a 100-point grid. Measured with the supplied rate
+200bp too high:
+
+| strike | C - P | forward error |
+|---|---|---|
+| 24,900 (nearest forward) | 8.22 | **0.014** |
+| 24,800 (spot at-the-money) | 107.69 | 0.178 |
+| 22,000 | 2,892.77 | 4.785 |
+
+Since the forward is the unknown, the usable rule is the observable one: pick the pair whose spread
+is smallest in absolute value. A test asserts the closed-form sensitivity predicts the measured error
+at every strike to within 1%.
+
+### Refusals rather than clamps
+
+Non-positive implied forward, a call-put spread that RISES with strike (no arbitrage-free market
+does that), fewer than two distinct strikes, zero time to expiry -- each returns `null`. With no time
+left the forward is the spot and the carry is unidentifiable, so any figure returned would be
+invented. Invalid quotes inside a chain are skipped rather than poisoning the fit, provided two
+distinct strikes survive.
+
+### European exercise only
+
+Parity does not hold under early exercise. This is correct for NSE index options and wrong for
+single-stock options, which are American -- and nothing here can detect the difference, so American
+quotes produce a plausible biased carry rather than a refusal. Documented at the class level.
+
+### Tests
+
+187, up from 159. Round-trips through all four model parameterisations plus negative rates and a
+carry above the rate; a chain built with a **different implied volatility at every strike**, since
+parity is model-free and an extraction that only worked on a flat surface would be quietly assuming
+something it has no right to; the stale-leg detection; the sensitivity closed form; and the
+motivating case, where guessing the dividend yield at zero misprices a 600-point out-of-the-money
+call by more than five points while the extracted carry reprices it exactly.
+
 ## 1.2.0
 
 Fixes four defects found by an independent review of 1.1.0, plus two the review's rejected findings

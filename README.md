@@ -93,6 +93,57 @@ var desk  = greeks.Scaled(new GreekConventions(DaysPerYear: 252, RatePointsPerUn
 The default divides theta by 365, not 252, because an option decays over calendar time — a weekend
 costs two days of extrinsic value though no session occurs.
 
+### The carry is the one input you should not guess
+
+Every price here is driven by the cost of carry `b`, and for an index it is worse than an
+assumption: **the cash index is not tradeable, so there is no carry that makes it so.** Nobody buys
+NIFTY. What trades is the future and the option chain, and those agree on a forward that a spot
+level plus a dividend forecast will not reproduce.
+
+The option market already states the answer in every call/put pair, because put-call parity is a
+static arbitrage rather than a model result:
+
+```csharp
+var chain = new CallPutQuote[]          // one expiry, strikes you would actually trade
+{
+    new(Strike: 24_800, CallPrice: 423.91, PutPrice: 316.22),
+    new(Strike: 24_900, CallPrice: 372.42, PutPrice: 364.20),
+    new(Strike: 25_000, CallPrice: 325.20, PutPrice: 416.45),
+};
+
+ImpliedForwardResult? marketCarry = ImpliedForward.FromChain(spot: 24_800, chain, timeToExpiry: 30 / 365.0);
+
+// Price and hedge every strike on that expiry off what the market is actually carrying at.
+var contract25400 = OptionModel.BlackScholes(24_800, 25_400, 30 / 365.0, 0.13, 0.065, OptionRight.Call);
+OptionInputs? onMarketCarry = marketCarry?.ApplyTo(contract25400);
+```
+
+`FromChain` needs **no interest rate** — parity is linear in the strike, so the call-put spread
+regressed on the strike gives the discount factor as its slope and the discounted forward as its
+intercept. The rate comes out as an *output*, which removes the last assumption from the chain. The
+carry it returns absorbs the dividend yield, the borrow spread, the index basis and any funding skew
+at once, none of them separately forecast.
+
+It also checks itself. On clean simultaneous European quotes every pair sits on one line, so
+`WorstParityResidual` is the diagnostic — a stale leg 12 points inside the bid/ask, invisible to
+eyeballing, shows up as a residual above 5. **Below three strikes that residual is zero by
+construction and means nothing**, which is precisely why the single-pair form is the weaker tool:
+
+```csharp
+// Only one strike quoted? This works, but supply a rate and it cannot detect its own failure.
+var single = ImpliedForward.FromCallPut(spot: 24_800, chain[1], 30 / 365.0, riskFreeRate: 0.065);
+```
+
+If you must use one pair, pick the pair whose `Spread` is smallest in absolute value — not the
+strike nearest spot. The error a wrong rate produces is `T·e^(rT)·(C−P)`, which vanishes at the
+forward, and on a 30-day NIFTY carrying at 5.3% the forward sits **108 points above spot**, four
+strikes away. Measured with the rate 200bp wrong: 0.014 at the near-forward strike, 0.178 at
+spot-at-the-money, 4.78 at a strike 2,800 points down.
+
+**European exercise only.** Parity breaks under early exercise, so this is right for NSE index
+options and wrong for single-stock options, which are American. Nothing in the library can detect
+that — American quotes yield a plausible, biased carry rather than a refusal.
+
 ### Implied volatility tells you when it can't be trusted
 
 ```csharp
