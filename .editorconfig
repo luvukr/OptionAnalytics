@@ -1,0 +1,24 @@
+root = true
+
+[*.cs]
+# This library ships a SINGLE flat public namespace: `using OptionAnalytics;` gets you
+# everything. The folders (Pricing/, Greeks/, Volatility/, Numerics/) are internal
+# organization only and deliberately do NOT map to namespaces.
+#
+# Microsoft's Framework Design Guidelines: "Types that are used in the same scenarios should
+# be in the same namespaces when possible. Users should not have to import many namespaces
+# to develop common scenarios." Pricing one contract and reading its greeks touches
+# Pricing/, Greeks/ and Numerics/ in three lines -- that is one scenario, not three.
+#
+# Without the two settings below, Visual Studio and Rider flag every file with "namespace
+# does not match folder structure" and offer a one-click fix that would rewrite them into
+# sub-namespaces. Accepting it would be a source-breaking change for every consumer the
+# moment this package has one. Do not accept that fix.
+dotnet_style_namespace_match_folder = false
+dotnet_diagnostic.IDE0130.severity = none
+
+indent_style = space
+indent_size = 4
+end_of_line = crlf
+insert_final_newline = true
+charset = utf-8

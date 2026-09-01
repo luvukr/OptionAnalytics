@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <RootNamespace>OptionAnalytics</RootNamespace>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <PackageId>OptionAnalytics</PackageId>
+    <Version>1.2.0</Version>
+    <Authors>SumKumar</Authors>
+    <Description>Dependency-free European option pricing, greeks and implied volatility for .NET. Black-Scholes (1973), Merton (1973), Black-76 and Garman-Kohlhagen (1983) as one cost-of-carry-parameterised model. Nine analytic greeks (delta, gamma, vega, theta, two rhos, vanna, volga, charm), Newton-with-bracket implied volatility that reports its own conditioning, put-call parity, and a double-precision normal distribution accurate to 2.9e-14 relative in both tails. Every greek verified against finite differences, put-call parity and the Black-Scholes PDE identity.</Description>
+    <PackageTags>options;black-scholes;greeks;implied-volatility;black76;garman-kohlhagen;quant;derivatives;trading</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <RepositoryType>git</RepositoryType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>

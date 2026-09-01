@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/OptionAnalytics/OptionAnalytics.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/OptionAnalytics.Tests/OptionAnalytics.Tests.csproj" />
+  </Folder>
+</Solution>

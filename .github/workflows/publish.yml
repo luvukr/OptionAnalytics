@@ -1,0 +1,39 @@
+name: Publish to NuGet
+
+on:
+  workflow_dispatch: {}      # manual trigger — run it yourself from the Actions tab when ready
+  release:
+    types: [published]       # also runs automatically when you publish a GitHub release
+
+permissions:
+  id-token: write            # required for NuGet Trusted Publishing (OIDC) — no stored secret
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      # Fail the publish rather than ship a package whose numbers were not checked.
+      - name: Test
+        run: dotnet test -c Release
+
+      - name: Pack
+        run: dotnet pack src/OptionAnalytics -c Release -o ./nupkg
+
+      # Exchanges this run's GitHub OIDC token for a one-hour temporary NuGet API key —
+      # requested right before publishing since it expires in 1 hour (per NuGet's Trusted
+      # Publishing docs). "user" is the NuGet.org account name (public info), not a secret.
+      - name: NuGet login (OIDC -> temporary API key)
+        uses: NuGet/login@v1
+        id: login
+        with:
+          user: luvmyindia
+
+      - name: Publish to NuGet.org
+        run: dotnet nuget push ./nupkg/*.nupkg --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
