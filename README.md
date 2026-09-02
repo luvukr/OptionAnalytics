@@ -93,6 +93,48 @@ var desk  = greeks.Scaled(new GreekConventions(DaysPerYear: 252, RatePointsPerUn
 The default divides theta by 365, not 252, because an option decays over calendar time — a weekend
 costs two days of extrinsic value though no session occurs.
 
+### Where did the P&L actually come from
+
+Attribution splits a mark-to-market change into the greek terms that produced it, and measures what
+none of them explains.
+
+```csharp
+var yesterday = OptionModel.Merton(24_800, 24_800, 30 / 365.0, 0.13, 0.065, 0.012, OptionRight.Call);
+var today     = yesterday with { Spot = 25_050, Volatility = 0.147, TimeToExpiry = 29 / 365.0 };
+
+PnlAttributionResult? why = PnlAttribution.Explain(yesterday, today);
+// why.DeltaPnl, .GammaPnl, .ThetaPnl, .VegaPnl, .VannaPnl, .VolgaPnl, .CharmPnl, .RatePnl, .CarryPnl
+// why.Residual        what no term accounts for
+// why.LargestTerm     ("DeltaPnl", 138.34)
+```
+
+It takes market **states**, not greeks, on purpose. Handing it an `OptionGreeks` would invite the
+one mistake that silently ruins the arithmetic — passing values that have been through `Scaled()`,
+where theta is per day and vega per volatility point. A per-day theta in a per-year expansion is
+wrong by 365. Computing the greeks internally in raw units makes that unrepresentable.
+
+**The diagnostic this exists for.** Take a short strangle described as harvesting time decay, on a
+day the index moves 1.2%:
+
+| | actual | theta | delta | gamma | largest |
+|---|---|---|---|---|---|
+| flat day | **+10.88** | +10.82 | 0.00 | 0.00 | `ThetaPnl` |
+| 1.2% up day | **−49.84** | +10.82 | −28.82 | −32.76 | `GammaPnl` |
+
+Every rupee of decay arrived exactly as advertised. It was irrelevant — the day was decided by short
+gamma. A strategy whose P&L consistently lands in a term it isn't named after is a different bet
+than its description, and that is mechanically visible here rather than a matter of interpretation.
+
+`ExplainPosition` does the same for multi-leg positions, summing leg by leg with signs, so a short
+leg contributes negative gamma automatically. Note this explains why a **mark moved**, not profit
+since entry — premium paid is a constant and constants have no derivatives.
+
+**Accuracy is measured, and the residual is not monotonic.** For a 30-day at-the-money call over one
+day: 0.04% of the move unexplained at a 0.5% move, 0.6% at 2%, 5.9% at 5%, and **24% at 10%** —
+where gamma itself moves over the gap. At the quiet end there is a floor of about 0.03 price units
+per day, because the expansion is only first order in time, so a small move shows a large *share*
+without the attribution being wrong. Read the residual in price units too.
+
 ### The carry is the one input you should not guess
 
 Every price here is driven by the cost of carry `b`, and for an index it is worse than an

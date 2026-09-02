@@ -1,5 +1,100 @@
 # Changelog
 
+## 1.4.0
+
+Adds `PnlAttribution`: a mark-to-market change split into the greek terms that produced it, plus the
+part none of them explains.
+
+Pure arithmetic over greeks the library already computes and verifies -- no new mathematics, one new
+identity, and a deliberate API choice that makes the obvious mistake unrepresentable.
+
+### The expansion
+
+`dV ~ Delta*dS + 0.5*Gamma*dS^2 + Theta*dt + Vega*dSigma + Vanna*dS*dSigma + 0.5*Volga*dSigma^2
++ Charm*dS*dt + dV/dr*dr + dV/db*db`
+
+`Actual` is obtained by repricing at both states rather than by summing terms, so the number the
+attribution has to explain is exact. `Explained` and `Residual` are computed properties, not stored
+fields, so they cannot drift out of agreement with the terms they summarise.
+
+### It takes market states, not greeks
+
+Accepting an `OptionGreeks` would invite the one error that silently ruins the arithmetic: passing
+values that have been through `Scaled()`. Those are display quantities -- theta per day, vega per
+volatility point -- and the expansion needs true derivatives. A per-day theta in a per-year
+expansion is wrong by a factor of 365. Greeks are therefore computed internally in raw units from
+the states supplied, and there is no way to pass the wrong convention. A test pins the distinction.
+
+### A new identity, verified three ways
+
+The expansion needs `dV/db`, the sensitivity to the carry with the rate held fixed, which the
+library does not expose. The two rhos determine it: `RhoCarryTracksRate` is `dV/dr` WITH the carry
+following, which is `dV/dr + dV/db`, and `RhoCarryFixed` is `dV/dr` alone. Their difference is
+`dV/db`, and it reduces to `T * S * Delta`.
+
+Checked against that closed form and against a finite-difference bump of the price, across
+in-, at- and out-of-the-money, calls and puts, 7 and 90 days. All three agree to the limit of the
+finite difference.
+
+This also means rate and carry are attributed as genuinely independent coordinates. In this
+parameterisation `r` and `b` are separate inputs, so a dividend revision and a rate move produce
+separate terms rather than being conflated.
+
+### The diagnostic it exists for
+
+A short strangle described as harvesting time decay, on a day the index moves 1.2%:
+
+| | actual | theta | delta | gamma | largest term |
+|---|---|---|---|---|---|
+| flat day | **+10.88** | +10.82 | 0.00 | 0.00 | `ThetaPnl` |
+| 1.2% up day | **-49.84** | +10.82 | -28.82 | -32.76 | `GammaPnl` |
+
+Every rupee of decay arrived exactly as advertised, and was swamped. The narrative is true and
+irrelevant: the day was decided by short gamma. A strategy whose P&L lands consistently in a term it
+is not named after is a different bet from its description, and `LargestTerm` makes that mechanical
+rather than interpretive.
+
+### Measured accuracy, including the end everyone misreads
+
+For a 30-day at-the-money call over one day, residual as a share of the actual change:
+
+| move | residual share |
+|---|---|
+| 0.05% | 4.4% |
+| 0.5% | **0.04%** |
+| 2% | 0.6% |
+| 5% | 5.9% |
+| 10% | **24%** |
+
+The high end is the expansion failing -- gamma moves over a gap that size, and the error grows
+faster than the cube of the move. A test asserts the 10% case is badly explained, because a library
+that quietly returned a confident-looking breakdown of a gap day would be worse than one that says
+so.
+
+The low end is a different thing and easy to misread. The expansion is only FIRST order in time, so
+the missing second time derivative leaves a residual floor of about 0.03 price units per day that
+does not shrink as the market goes quiet. A test pins that floor and pins that shrinking the spot
+move does not remove it. On a still day the share looks poor because the denominator is small, not
+because the attribution is.
+
+`ResidualShare` returns `null` rather than a large number when nothing happened, since a ratio
+against zero is meaningless.
+
+### Refusals
+
+Time running backwards returns `null` -- almost always swapped arguments, which would otherwise
+produce a plausible breakdown with every sign inverted. So do two states describing different
+contracts, invalid states, and an unusable position.
+
+### Tests
+
+211, up from 187. The wiring is tested by moving one variable at a time and asserting exactly which
+terms fire and which are still zero, since the real risk in this class is not the mathematics but
+pairing the wrong greek with the wrong move -- vega against the spot change, charm against the
+volatility change. Every such transposition is caught. Plus the `dV/db` identity, the per-year theta
+convention, position sums against per-leg sums, the residual scaling, the time-curvature floor, and
+the strangle diagnosis above.
+
 ## 1.3.0
 
 Adds `ImpliedForward`: the forward price and cost of carry the option market is actually quoting,

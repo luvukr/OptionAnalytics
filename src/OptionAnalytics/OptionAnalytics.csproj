@@ -11,9 +11,9 @@
 
   <PropertyGroup>
     <PackageId>OptionAnalytics</PackageId>
-    <Version>1.3.0</Version>
+    <Version>1.4.0</Version>
     <Authors>SumKumar</Authors>
-    <Description>Dependency-free European option pricing, greeks and implied volatility for .NET. Black-Scholes (1973), Merton (1973), Black-76 and Garman-Kohlhagen (1983) as one cost-of-carry-parameterised model. Nine analytic greeks (delta, gamma, vega, theta, two rhos, vanna, volga, charm), Newton-with-bracket implied volatility that reports both convergence and conditioning, market-implied forward and cost-of-carry extraction from call/put pairs, put-call parity, and a double-precision normal distribution accurate to 2.9e-14 relative in both tails. Every greek verified against finite differences, put-call parity and the Black-Scholes PDE identity.</Description>
+    <Description>Dependency-free European option pricing, greeks and implied volatility for .NET. Black-Scholes (1973), Merton (1973), Black-76 and Garman-Kohlhagen (1983) as one cost-of-carry-parameterised model. Nine analytic greeks (delta, gamma, vega, theta, two rhos, vanna, volga, charm), Newton-with-bracket implied volatility that reports both convergence and conditioning, market-implied forward and cost-of-carry extraction from call/put pairs, greek profit-and-loss attribution with a measured residual, put-call parity, and a double-precision normal distribution accurate to 2.9e-14 relative in both tails. Every greek verified against finite differences, put-call parity and the Black-Scholes PDE identity.</Description>
     <PackageTags>options;black-scholes;greeks;implied-volatility;black76;garman-kohlhagen;quant;derivatives;trading</PackageTags>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
