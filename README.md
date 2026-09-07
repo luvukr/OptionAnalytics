@@ -93,6 +93,105 @@ var desk  = greeks.Scaled(new GreekConventions(DaysPerYear: 252, RatePointsPerUn
 The default divides theta by 365, not 252, because an option decays over calendar time — a weekend
 costs two days of extrinsic value though no session occurs.
 
+### Expiry day breaks the time-to-expiry everyone writes
+
+`(expiry - now).TotalDays / 365` is fine with a month to run and wrong on the day. It is a
+whole-day quantity answering an intraday question, so on expiry day it is **zero from the opening
+bell**. Hand a zero to the pricer and it correctly reports an expired contract — no gamma, no vega,
+no implied volatility to solve — at 11:30 in the morning, when gamma is the largest number on the
+book. The library cannot fix that; the error is upstream in the arithmetic that produced the zero.
+
+```csharp
+var clock = TradingClock.Until(
+    now: new DateTime(2026, 9, 8, 11, 30, 0),
+    expiry: new DateTime(2026, 9, 8, 15, 30, 0),   // 15:30, not midnight
+    session: TradingSession.IndiaEquity,           // 09:15-15:30, 375 minutes
+    fullTradingDaysBetween: 0);                    // from YOUR holiday calendar
+
+double? t = clock?.CalendarYears;                  // use this for pricing
+double? left = clock?.TradingMinutesRemaining;     // 240 -- the number to watch on expiry day
+```
+
+Measured at that instant, on a 24,800 at-the-money call:
+
+| | price | gamma | vega | IV solvable |
+|---|---|---|---|---|
+| naive daily `T` | **0.000** | 0 | 0 | **no** |
+| computed from instants | **27.79** | 5.79e-3 | 211.4 | yes |
+
+**No exchange calendar ships with this package.** Session hours change by circular and holidays
+change every year; a stale table is worse than none because it still looks authoritative — the same
+reason there is no lot-size table. You pass the session and the trading-day count.
+
+#### On the two clocks, and why you should use the calendar one
+
+Variance accrues only while the market is open; interest accrues every calendar day. So there are
+genuinely two clocks, and `TradingYears` is provided alongside `CalendarYears`.
+
+**Use `CalendarYears` for pricing anyway.** `OptionInputs` carries one `TimeToExpiry`, and the pricer
+uses it for the diffusion *and* for `r·T` and `b·T`. A trading-time value gets the variance right
+and then charges interest over the wrong span — measured at **1.24%** on a three-week at-the-money
+call. That the gap is purely discounting is not a guess: rescaling the rate and carry by the ratio of
+the two clocks reproduces the calendar price to the bit, and gamma agrees to 0.08% either way.
+
+`VolatilityInTradingTime` converts a quoted (calendar-annualised) volatility for use with
+`TradingYears`, preserving total variance to eight significant figures. It exists so anyone working
+in trading time isn't silently pairing it with a volatility annualised on the other clock — market
+IV and India VIX both are.
+
+The trading clock's real value is reading time, not pricing it. After Friday's close on a
+Monday-morning expiry, `NoTradingTimeLeft` is true while calendar time still runs: no further
+variance can accrue, though the discount factor has a weekend to unwind. Calendar time cannot say
+that.
+
+### A price spread is the wrong unit for the decision
+
+Market feeds stream bids and asks, not fair values. Solving the mid is the obvious move and it fails
+often: on an illiquid strike the mid is frequently not a price any volatility produces — below
+intrinsic, or below the model's floor — and `Solve` correctly refuses it.
+
+```csharp
+var nifty7dte = OptionModel.Merton(spot: 24_800, strike: 24_800, timeToExpiry: 7 / 365.0,
+                                   volatility: 0.13, riskFreeRate: 0.065, dividendYield: 0.012,
+                                   right: OptionRight.Call);
+
+// A 0.20-wide quote around the 190.86 fair value.
+var quoted = ImpliedVolatility.SolveBidAsk(bid: 190.76, ask: 190.96, inputs: nifty7dte);
+
+double? width = quoted?.VolatilitySpread;   // the number the decision actually turns on
+bool usable  = quoted?.IsResolvable ?? false;
+```
+
+**Two strikes quoted equally wide are not equally tradeable.** One quote 0.20 wide, measured across a
+7-day NIFTY chain:
+
+| strike | fair | vega | IV width | vs ATM |
+|---|---|---|---|---|
+| 24,800 | 190.86 | 1366.89 | **0.015pt** | 1.0× |
+| 25,500 | 13.57 | 457.72 | 0.044pt | 3.0× |
+| 25,800 | 2.64 | 141.64 | 0.141pt | 9.7× |
+| 26,000 | 0.74 | 51.81 | **0.388pt** | 26.5× |
+| 26,200 | 0.18 | 15.92 | *cannot carry a 0.20 quote at all* | |
+
+Same twenty paise. Twenty-six times the volatility uncertainty, because vega has collapsed and price
+barely responds to volatility out there. The width is exactly `(ask − bid) / vega` — the theoretical
+form of the tick rule documented under `VegaAtSolution`, measured instead of estimated.
+
+**Sides fail independently, and that is reported rather than smoothed over.** A zero bid is routine
+in the wings and has no implied volatility, while the ask beside it solves to machine precision:
+
+- deep out of the money — the bid clamps to the floor with `Converged == false`
+- deep in the money — the bid is below intrinsic and comes back `null` outright
+
+`IsResolvable` catches both, which is why it checks `Converged` and not merely non-null. Nothing here
+substitutes a floor or the other side's answer for a side that cannot be solved: a fabricated
+volatility on the bid is how a strike that cannot be sold gets quoted as though it can.
+
+A crossed quote is refused outright — the result's whole meaning is a bracket, and a bid above an ask
+brackets nothing. And note the distinction the return type draws: all three sides `null` **inside** a
+result means the market does not price this strike, while a `null` **result** means the call was not
+answerable. Those must never be confusable.
+
 ### Where did the P&L actually come from
 
 Attribution splits a mark-to-market change into the greek terms that produced it, and measures what

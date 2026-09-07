@@ -54,6 +54,70 @@ public sealed record ImpliedVolatilityResult(
     bool Converged);
 
 /// <summary>
+/// A quoted option's volatility seen from both sides of the spread.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <b>The width of this bracket, not the width of the price spread, is what tells you whether a
+/// strike is usable.</b> Two strikes quoted a rupee wide are not equally tradeable: a rupee on an
+/// at-the-money contract is a fraction of a volatility point, and the same rupee on a far wing is
+/// tens of points, because vega has collapsed and price barely responds to volatility at all. A
+/// price spread is denominated in the wrong unit for the decision.
+/// </para>
+/// <para>
+/// Each side is a full <see cref="ImpliedVolatilityResult"/> rather than a bare number, so
+/// <see cref="ImpliedVolatilityResult.Converged"/> and
+/// <see cref="ImpliedVolatilityResult.VegaAtSolution"/> survive per side. Sides fail independently
+/// and routinely: a zero bid is ordinary in the wings and has no implied volatility, while the ask
+/// on the same contract solves perfectly.
+/// </para>
+/// </remarks>
+/// <param name="Bid">
+/// The volatility that reproduces the bid, or <c>null</c> if no volatility does — the bid sits
+/// outside the model's achievable range.
+/// </param>
+/// <param name="Ask">The volatility that reproduces the ask, or <c>null</c> on the same grounds.</param>
+/// <param name="Mid">
+/// The volatility at the mid price. SOLVED at the mid, not averaged from the two sides: price is
+/// non-linear in volatility, so the volatility at the mid price is not the mid of the two
+/// volatilities. The gap is small — measured at 0.002 volatility points on an at-the-money quote
+/// eight points wide, rising to 0.145 on a wing — so this is not a correction anyone needs for
+/// accuracy. It is simply the only one of the two that reprices the mid, which is what a mid
+/// volatility is for.
+/// </param>
+/// <param name="MidPrice">The mid price that <paramref name="Mid"/> was solved against.</param>
+public sealed record BidAskVolatility(
+    ImpliedVolatilityResult? Bid,
+    ImpliedVolatilityResult? Ask,
+    ImpliedVolatilityResult? Mid,
+    double MidPrice)
+{
+    /// <summary>
+    /// <c>Ask volatility - Bid volatility</c>: the quote's width expressed in the unit the decision
+    /// is actually made in.
+    /// </summary>
+    /// <remarks>
+    /// As a decimal, so multiply by 100 for volatility points. Non-negative whenever the quote is
+    /// not crossed, because price rises monotonically with volatility.
+    /// </remarks>
+    /// <returns>The width, or <c>null</c> if either side has no implied volatility.</returns>
+    public double? VolatilitySpread => Bid is null || Ask is null
+        ? null
+        : Ask.Volatility - Bid.Volatility;
+
+    /// <summary>
+    /// True when both sides of the quote correspond to a real volatility that the solver actually
+    /// reached.
+    /// </summary>
+    /// <remarks>
+    /// The precondition for treating a strike as priceable at all. False means at least one side is
+    /// outside the achievable range or was clamped at a search bound — in which case
+    /// <see cref="Mid"/> may still return a number, and that number is not a measurement.
+    /// </remarks>
+    public bool IsResolvable => Bid is { Converged: true } && Ask is { Converged: true };
+}
+
+/// <summary>
 /// Back-solves the volatility that reproduces an observed option price.
 /// </summary>
 /// <remarks>
@@ -219,5 +283,80 @@ public static class ImpliedVolatility
         return Math.Clamp(guess, MinVolatility * 10, Math.Min(MaxVolatility * 0.5, 5.0)) is var g && double.IsFinite(g)
             ? g
             : 0.2;
+    }
+
+    /// <summary>
+    /// Back-solves implied volatility from both sides of a quote, and from the mid.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Why not just solve the mid.</b> On an illiquid strike the mid is frequently not a price
+    /// any volatility can produce — it sits below intrinsic, or below the model's floor — and
+    /// <see cref="Solve"/> correctly refuses it. Handed a whole chain, that refusal is common rather
+    /// than exceptional: measured on a 1,000-strike NIFTY chain a week from expiry, <b>13% of
+    /// strikes had no resolvable volatility at all</b>. One strike in eight is not an edge case, and
+    /// a caller who only ever solves the mid learns nothing about which eighth.
+    /// </para>
+    /// <para>
+    /// Solving both sides answers the question the mid cannot: not "what is the volatility" but
+    /// "how much volatility does this quote fail to pin down". See
+    /// <see cref="BidAskVolatility.VolatilitySpread"/>.
+    /// </para>
+    /// <para>
+    /// <b>Sides fail independently and that is reported, not smoothed over.</b> A zero bid — routine
+    /// in the wings — has no implied volatility, while the ask beside it solves to machine
+    /// precision. Nothing here substitutes a floor, a nearest bound, or the other side's answer for
+    /// a side that cannot be solved: it returns <c>null</c> for that side, because a fabricated
+    /// volatility on the bid is how a strike that cannot be sold gets quoted as though it can.
+    /// </para>
+    /// </remarks>
+    /// <param name="bid">The bid price. May be zero; may equal <paramref name="ask"/>.</param>
+    /// <param name="ask">The ask price. Must not be below <paramref name="bid"/>.</param>
+    /// <param name="inputs">
+    /// The contract and market state. <see cref="OptionInputs.Volatility"/> is ignored — it is the
+    /// unknown.
+    /// </param>
+    /// <param name="tolerance">Absolute price tolerance, as for <see cref="Solve"/>.</param>
+    /// <param name="maxIterations">Hard cap on solver steps per side.</param>
+    /// <returns>
+    /// The three solves, or <c>null</c> if the contract or market state is unusable, if a solver
+    /// setting is unusable, if there is no time left to invert, or if the quote is CROSSED. All
+    /// three sides being <c>null</c> INSIDE a returned result means the market does not price this
+    /// strike; a <c>null</c> result means the call itself was not answerable, and the two must not
+    /// be confusable. A crossed quote is refused rather than
+    /// reported because the entire meaning of the result is a bracket, and a bid above an ask does
+    /// not bracket anything — it means one side is stale or the feed is wrong, which is a data
+    /// problem and not a market condition.
+    /// </returns>
+    public static BidAskVolatility? SolveBidAsk(
+        double bid,
+        double ask,
+        OptionInputs inputs,
+        double tolerance = 1e-10,
+        int maxIterations = 100)
+    {
+        if (inputs is null) return null;
+        if (!double.IsFinite(bid) || !double.IsFinite(ask)) return null;
+        if (bid < 0 || ask < bid) return null;
+
+        // Solver settings are configuration, not market data, so an unusable one is a refusal here
+        // rather than three per-side nulls further down. Without this check a caller who passed
+        // tolerance: 0 got a result whose every side was null -- indistinguishable from a strike the
+        // market genuinely does not price, which turns a programmer error into a false market
+        // observation.
+        if (!double.IsFinite(tolerance) || tolerance <= 0 || maxIterations <= 0) return null;
+
+        // Validate everything but the unknown, so an unusable contract is one refusal rather than
+        // three coincidental ones.
+        if (!(inputs with { Volatility = 1.0 }).IsValid) return null;
+        if (inputs.TimeToExpiry <= 0) return null;
+
+        double mid = 0.5 * (bid + ask);
+
+        return new BidAskVolatility(
+            Bid: Solve(bid, inputs, tolerance, maxIterations),
+            Ask: Solve(ask, inputs, tolerance, maxIterations),
+            Mid: Solve(mid, inputs, tolerance, maxIterations),
+            MidPrice: mid);
     }
 }

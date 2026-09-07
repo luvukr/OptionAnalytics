@@ -1,5 +1,168 @@
 # Changelog
 
+## 1.6.0
+
+Adds `TradingClock`, `TradingSession` and `TimeRemaining`: a time to expiry that survives expiry
+day. Also reverses a claim this release was originally written to make, because the measurement
+contradicted it.
+
+### The defect being removed is upstream of the library
+
+`(expiry - now).TotalDays / 365` is a whole-day quantity answering an intraday question, so on
+expiry day it is zero from the opening bell. Handed a zero, `BlackScholesMerton` correctly reports an
+expired contract -- gamma and vega zero, no implied volatility to solve -- at 11:30 in the morning,
+when gamma is the largest number on the book. The pricer is not at fault and cannot fix it. The
+arithmetic that produced the zero is, and that is what this replaces.
+
+Measured at 11:30 on expiry day, 24,800 at-the-money call, 240 trading minutes left:
+
+| | price | gamma | vega | IV solvable |
+|---|---|---|---|---|
+| naive daily `T` | **0.000** | 0 | 0 | **no** |
+| computed from instants | **27.79** | 5.79e-3 | 211.4 | yes |
+
+A test also pins gamma rising monotonically through the session and exceeding 0.02 by 15:15, which
+is the 0-DTE gamma behaviour the naive figure erases entirely.
+
+### No exchange calendar, deliberately
+
+Session hours change by circular and holidays change every year. A hardcoded table that has gone
+stale is worse than no table, because it still looks authoritative -- the same reasoning that keeps a
+lot-size table out of this package. You supply the `TradingSession` and the count of full trading
+days between the dates. `TradingSession.IndiaEquity` (09:15-15:30, 375 minutes) is a convenience
+value you can replace, not a commitment; if the exchange moves its hours, that constant is wrong and
+yours is right. `tradingDaysPerYear` and `calendarDaysPerYear` are parameters for the same reason.
+
+### The two clocks: what this release was going to say, and what the measurement said
+
+Variance accrues only while the market is open; interest accrues every calendar day. Two clocks
+genuinely exist, and the intended headline was that trading time is the better one to price on.
+
+It is not, with this library. `OptionInputs` carries a single `TimeToExpiry` which the pricer uses
+for the diffusion AND for `r*T` and `b*T`. A trading-time value gets the variance right and then
+charges interest over a span that is not the calendar period. Measured on a three-week at-the-money
+call: **1.24% mispricing**, which is error rather than refinement.
+
+That the gap is entirely discounting is proven rather than argued -- rescaling the rate and carry by
+the ratio of the two clocks reproduces the calendar-clock price to **exactly zero difference**, and
+gamma agrees to 0.08% either way. Both facts are asserted by tests.
+
+So `CalendarYears` is the recommendation for pricing, and `TradingYears` carries a
+do-not-pass-this-to-OptionInputs warning at the point of use. The documentation was rewritten around
+the measurement after it was taken, including one figure originally quoted from the trading clock
+while the text recommended the calendar one.
+
+`VolatilityInTradingTime` converts a calendar-annualised volatility -- which is what market quotes
+and India VIX are -- into the trading-time-annualised one that belongs with `TradingYears`,
+preserving total variance to eight significant figures. It is there so that anyone with a reason to
+work in trading time is not silently pairing it with a volatility annualised on the other clock, not
+as a way to get different prices.
+
+### What the trading clock is genuinely for
+
+Reading the time rather than pricing it. `TradingMinutesRemaining` counts 375 at the open to 0 at the
+bell. `NoTradingTimeLeft` distinguishes a state calendar time cannot express: after Friday's close on
+a Monday-morning expiry there is calendar time remaining but no trading time, so no further variance
+can accrue even though the discount factor still has a weekend to unwind.
+
+### Refusals
+
+Expiry before now, a session closing before it opens, a negative trading-day count, and non-positive
+or non-finite day-count divisors all return `null`. Expiry exactly at `now` is valid and returns zero
+on both clocks -- the one moment a zero is the truth rather than an artefact.
+
+### Tests
+
+257, up from 235. Minute-by-minute countdown through expiry day, instants before the open and after
+the close, a holiday today, the multi-day decomposition, the weekend case, variance preservation,
+the 1.24% discounting error and its proof, convention parameters, and a custom four-hour session.
+
+## 1.5.0
+
+Adds `ImpliedVolatility.SolveBidAsk` and `BidAskVolatility`: a quoted option's volatility seen from
+both sides of the spread. Also fixes a defect in that new wrapper, found by its own test.
+
+### Why solving the mid is not enough
+
+Feeds stream bids and asks. Solving the mid is the obvious move and it fails often: on an illiquid
+strike the mid is frequently not a price any volatility produces, and `Solve` correctly refuses it.
+Handed a whole chain, that refusal is common rather than exceptional -- measured on a 1,000-strike
+NIFTY chain a week from expiry, 13% of strikes had no resolvable volatility at all. One strike in
+eight is not an edge case, and a caller who only solves the mid never learns which eighth.
+
+### The width of the bracket is the answer, not the price spread
+
+One quote 0.20 wide, across a 7-day chain:
+
+| strike | fair | vega | IV width | vs ATM |
+|---|---|---|---|---|
+| 24,800 | 190.86 | 1366.89 | **0.015pt** | 1.0x |
+| 25,500 | 13.57 | 457.72 | 0.044pt | 3.0x |
+| 25,800 | 2.64 | 141.64 | 0.141pt | 9.7x |
+| 26,000 | 0.74 | 51.81 | **0.388pt** | 26.5x |
+| 26,200 | 0.18 | 15.92 | cannot carry a 0.20 quote at all | |
+
+The same twenty paise buys twenty-six times the volatility uncertainty, because vega has collapsed.
+A price spread is denominated in the wrong unit for the decision.
+
+The width is exactly `(ask - bid) / vega`, verified to a thousandth across four strikes -- which
+makes the bracket the measured form of the tick-resolvability rule already documented under
+`VegaAtSolution`, rather than a second opinion about it.
+
+### Sides fail independently
+
+Each side is a full `ImpliedVolatilityResult`, so `Converged` and `VegaAtSolution` survive per side
+and no information is lost to a flattened return type. A zero bid -- routine in the wings -- behaves
+two different ways and both are reported:
+
+- out of the money, the bid clamps to the volatility floor with `Converged == false`
+- in the money, the bid is below intrinsic and comes back `null`, since there is nothing to clamp to
+
+`IsResolvable` catches both, which is why it tests `Converged` rather than merely non-null. Nothing
+substitutes a floor, a nearest bound, or the other side's answer for a side that cannot be solved.
+
+`Mid` is SOLVED at the mid price rather than averaged from the two sides. Price is non-linear in
+volatility so the two genuinely differ, but the gap is small -- 0.002 volatility points on an
+at-the-money quote eight points wide, rising to 0.145 on a wing. The reason to solve it is that it is
+the only one of the two that reprices the mid, not that averaging is inaccurate. An earlier draft of
+this documentation claimed the two "differ materially"; the measurement says otherwise and the
+wording was corrected.
+
+### Fixed: an invalid solver setting was reported as a market condition
+
+`SolveBidAsk(..., tolerance: 0)` returned a NON-null result with all three sides `null`. `Solve`
+refuses a non-positive tolerance, so every side refused individually -- and the result was
+indistinguishable from a strike the market genuinely does not price. A programmer error arrived
+dressed as a market observation, which is the worst available failure for a class whose entire job is
+to say which strikes are real.
+
+Solver settings are configuration, not market data, so an unusable one is now a single refusal up
+front. The return contract is stated explicitly: all three sides `null` INSIDE a result means the
+market does not price this strike, a `null` result means the call was not answerable, and the two must
+not be confusable.
+
+Found by a test written to check that the parameters were honoured, which is the only reason it was
+found before publication.
+
+### Refusals
+
+A crossed quote (`bid > ask`) is refused rather than reported: the result's whole meaning is a
+bracket, and a bid above an ask brackets nothing -- it means one side is stale or the feed is wrong,
+a data problem rather than a market condition. A locked quote (`bid == ask`) is fine and returns zero
+width. Negative or non-finite prices, an expired contract, and an unusable contract are all refused.
+
+### Tests
+
+235, up from 211. Including the cross-chain width comparison above, the `(ask - bid) / vega`
+identity, bracket monotonicity at every strike, per-side repricing, a two-volatility round trip, both
+zero-bid behaviours, the solved-versus-averaged mid, and a 101-strike sweep asserting that a real
+chain contains both resolvable and unresolvable strikes.
+
+One test had to be rewritten rather than the code: it built quotes as a percentage of fair value,
+which puts the bid below intrinsic on a deep in-the-money call. The bid side correctly had no
+volatility. Quotes in that test are now built from volatilities so both sides are achievable by
+construction.
+
 ## 1.4.0
 
 Adds `PnlAttribution`: a mark-to-market change split into the greek terms that produced it, plus the
