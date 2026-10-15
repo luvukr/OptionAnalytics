@@ -306,9 +306,51 @@ digit**, vega is `8e-71`, and `PriceError` is exactly zero. The solve is perfect
 meaningless.
 
 So `ImpliedVolatilityResult` reports **`VegaAtSolution`** and this library imposes no cutoff. Where
-the threshold belongs depends on your price scale and tick size, which you know and it doesn't. A
-rough rule: if a one-tick price change would move implied volatility more than you care about
-(`tick / VegaAtSolution`), the answer isn't resolvable at that tick.
+the threshold belongs depends on your price scale and tick size, which you know and it doesn't. The
+rule — if a one-tick price change would move implied volatility more than you care about, the answer
+isn't resolvable at that tick — has a method, so you don't hand-code it:
+
+```csharp
+double? resolution = solved.VolatilityUncertaintyPerTick(tickSize: 0.05);   // NSE index options
+```
+
+That is the resolution limit of the answer, in absolute terms — `0.02` meaning two volatility
+points. A volatility quoted finer than this is quoting the last tick of the price rather than the
+market's view. Judge it against what the number is *for*: selecting a strike by delta tolerates a
+lot of volatility error, because delta moves slowly in volatility precisely where these solves are
+badly conditioned; quoting a volatility spread tolerates almost none.
+
+**There are two conditioning failures, and the tick rule only catches one.** The tick rule asks about
+an *absolute* error of one tick. Away from the money the damaging error is *relative*: the option
+costs thousands while its vega is small, so a price a fraction of a percent from fair moves the
+implied volatility by whole points. `VolatilityUncertaintyPerPricePercent(optionPrice)` measures that
+one. All columns below come from **one** 21-day NIFTY put chain at 10.5% vol:
+
+| strike | delta | `tick/vega` says | vol pts per 1% price error | actual error at 0.2% low |
+|---|---|---|---|---|
+| 24,800 | −0.436 | 0.000021 | 0.09 | 0.02 pts |
+| 25,500 | −0.827 | 0.000033 | 0.44 | 0.09 pts |
+| **26,000** | **−0.957** | 0.000092 — *"fine"* | **2.04** | **0.44 pts** |
+| 26,500 | −0.993 | 0.000447 | 14.31 | **refused** |
+| 27,500 | −1.000 | 0.049915 | 2,593 | **refused** |
+
+The 26,000 row is the dangerous one: a 0.2% price error moves the answer by 0.44 volatility points,
+while the tick rule reports 0.00009 and calls the strike healthy.
+
+**Further out, the arbitrage bounds save you.** Past about delta −0.99 that same 0.2% error pushes
+the price below the European lower bound `K·e^(−rT) − S` and the solve **refuses** rather than
+returning a number. So the hazardous band is the middle — where the solve still succeeds and the
+answer is already worthless. (This is also why a deep European put can quote *below* `K − S`: you
+have to wait to receive the strike.)
+
+Which rehabilitates the `|delta| > 0.95` cutoff that gets dismissed as crude. It *is* a proxy and it
+*does* need per-instrument calibration — but it's a proxy for the relative failure, which is the one
+that bites. Reaching for vega and stopping at the tick rule would have missed it.
+
+**What to compare the number against** is not zero — every solve has some — but how wrong your input
+price could plausibly be. A live mid from a tight two-sided market might be good to a few basis
+points; an exchange settlement price is a computed figure rather than a trade and can sit a few
+tenths of a percent from fair. Multiply the two for the volatility error you're actually carrying.
 
 The two are different questions and both are reported: `Converged` asks whether the solver found the
 volatility, `VegaAtSolution` asks whether that volatility means anything.

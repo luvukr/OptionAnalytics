@@ -1,5 +1,73 @@
 # Changelog
 
+## 1.7.0
+
+Makes the implied-volatility conditioning rule executable, and corroborates it with a live-chain
+observation. No behaviour change to any existing member.
+
+### VolatilityUncertaintyPerTick
+
+`ImpliedVolatilityResult` already reported `VegaAtSolution`, and its documentation already gave
+the rule: if a one-tick change in the observed price would move the implied volatility by more
+than you care about (`tick / VegaAtSolution`), the answer is not resolvable at that tick. That
+rule now has a method, so callers stop hand-coding it.
+
+It returns the volatility uncertainty in absolute terms -- 0.02 meaning two volatility points --
+and it is the resolution limit of the answer: a volatility quoted finer than this is quoting the
+last tick of the price rather than the market's view. `null` for a non-positive or non-finite
+tick, a non-finite vega, or a vega of zero, that last being the extreme of exactly the problem
+being measured and not something to return as an infinity a caller might format and display.
+
+**The library still does not impose a cutoff**, and that remains deliberate. Where the threshold
+belongs depends on what the number is for: selecting a strike by delta tolerates a great deal of
+volatility error, because delta moves slowly in volatility precisely where these solves are badly
+conditioned, while quoting a volatility spread tolerates almost none.
+
+### VolatilityUncertaintyPerPricePercent, and a claim this release was written to make and does not
+
+The release was drafted around a single thesis: that a `|delta| > 0.95` cutoff is a crude proxy for
+vega, and that the tick rule above therefore supersedes it. **Measurement contradicted that**, and
+the documentation was rewritten around the measurement.
+
+There are two conditioning failures, not one. The tick rule asks about an *absolute* price error of
+one tick. Away from the money the damaging error is *relative*: the option costs thousands while its
+vega is small, so a price a fraction of a percent from fair moves the implied volatility by whole
+points. All columns below are from **one** 21-day NIFTY put chain at 10.5% volatility -- an earlier
+draft of this entry spliced deltas from a 13% run onto sensitivities from a 10.5% run, and the
+figures disagreed:
+
+| strike | delta | `tick/vega` says | vol pts per 1% price error | actual error at 0.2% low |
+|---|---|---|---|---|
+| 24,800 | -0.436 | 0.000021 | 0.09 | 0.02 pts |
+| 25,500 | -0.827 | 0.000033 | 0.44 | 0.09 pts |
+| **26,000** | **-0.957** | 0.000092 | **2.04** | **0.44 pts** |
+| 26,500 | -0.993 | 0.000447 | 14.31 | refused |
+| 27,500 | -1.000 | 0.049915 | 2,593 | refused |
+
+The 26,000 row is the hazardous one: a 0.2% price error moves the answer by 0.44 volatility points
+while the tick rule reports 0.00009 and calls the strike healthy. So
+`VolatilityUncertaintyPerPricePercent` is added alongside rather than instead, and neither measure
+subsumes the other.
+
+**Further out, the arbitrage bounds take over.** Past about delta -0.99 the same 0.2% error pushes
+the price below the European lower bound `K*exp(-rT) - S` and the solve refuses rather than
+returning a number -- the well-behaved end of the problem. A test pins that, along with the fact
+that a deep European put legitimately quotes below `K - S`, because the strike is only received at
+expiry. The dangerous band is the middle, where the solve still succeeds and the answer is already
+worthless.
+
+Which **rehabilitates** the delta cutoff rather than replacing it. It is a proxy and it does need
+per-instrument calibration, but it is a proxy for the relative failure, which is the one that bites.
+Reaching for vega and stopping at the tick rule would have missed it -- as this release nearly did.
+
+### Tests
+
+283, up from 257. Including the monotone rise with moneyness for both measures, the pairing with
+`SolveBidAsk` that says whether a quoted volatility spread is wider than the resolution limit, the
+8e-71 vega from the existing documentation which must not come back as an infinity, the strike where
+the tick rule and the relative measure disagree by three orders of magnitude, and the arbitrage-bound
+refusal deeper in.
+
 ## 1.6.0
 
 Adds `TradingClock`, `TradingSession` and `TimeRemaining`: a time to expiry that survives expiry
